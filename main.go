@@ -20,6 +20,7 @@ var (
 	titleStyle        = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#0455DD")).MarginBottom(1)
 	selectedItemStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#F50404")).Bold(true)
 	helpStyle         = lipgloss.NewStyle().Foreground(lipgloss.Color("#AAAAAA")).MarginTop(1)
+	streamingStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("#04FF04")).MarginTop(1)
 	urlBoxStyle       = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("#04D575")).Padding(1).MarginBottom(1)
 	presetBoxStyle    = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("#D50404")).Padding(1)
 	selectedURLStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("#04F575")).Bold(true)
@@ -41,8 +42,6 @@ type model struct {
 	showAddPreset  bool
 	urlInput       textinput.Model
 	presetInput    textinput.Model
-	streaming      bool
-	streamCmd      *exec.Cmd
 }
 
 func (m model) Init() tea.Cmd {
@@ -67,9 +66,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		switch msg.String() {
 		case "ctrl+c", "q":
-			if m.streaming && m.streamCmd != nil {
-				_ = m.streamCmd.Process.Kill()
-			}
 			return m, tea.Quit
 
 		case "w", "W":
@@ -176,11 +172,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Add preset (lowercase p only)
 			m.showAddPreset = true
 			m.presetInput = textinput.New()
-			m.presetInput.Placeholder = "-f v4l2 -framerate 25 -video_size 1920x1080 -i /dev/video0 -f alsa -i plughw:2,0 libx264 aac -preset veryfast -maxrate 1M -bufsize 2M -pix_fmt yuv420p -b:a 96k -ar 44100"
+			m.presetInput.Placeholder = "-f v4l2 -i /dev/video0 -f alsa -i plughw:2,0 -vcodec libx264 -preset veryfast -maxrate 1M -bufsize 2M -pix_fmt yuv420p -c:a aac -b:a 96k -ar 44100"
 			m.presetInput.Focus()
 			m.presetInput.CharLimit = 1000
 			m.presetInput.Width = 500
 			return m, nil
+
+		case "k":
+			_ = exec.Command("pkill", "-9", "ffmpeg").Run()
 		}
 	}
 
@@ -223,7 +222,7 @@ func (m model) updateAddPreset(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.presetIndex = len(m.config.Presets) - 1
 				m.showAddPreset = false
 			} else if len(m.config.Presets) == 0 {
-				m.config.Presets = append(m.config.Presets, "-f v4l2 -framerate 25 -video_size 1920x1080 -i /dev/video0 -f alsa -i plughw:2,0 libx264 aac -preset veryfast -maxrate 1M -bufsize 2M -pix_fmt yuv420p -b:a 96k -ar 44100")
+				m.config.Presets = append(m.config.Presets, "-f v4l2 -i /dev/video0 -f alsa -i plughw:2,0 -vcodec libx264 -preset veryfast -maxrate 1M -bufsize 2M -pix_fmt yuv420p -c:a aac -b:a 96k -ar 44100")
 				_ = saveConfig(m.config)
 				m.presetIndex = len(m.config.Presets) - 1
 				m.showAddPreset = false
@@ -241,11 +240,7 @@ func (m model) updateAddPreset(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m model) startStreaming() (tea.Model, tea.Cmd) {
-	if m.streamCmd != nil && m.streamCmd.Process != nil {
-		_ = m.streamCmd.Process.Kill() // force kill
-		_ = m.streamCmd.Wait()         // reap the process
-		m.streamCmd = nil
-	}
+	_ = exec.Command("pkill", "-9", "ffmpeg").Run()
 
 	url := m.config.URLs[m.selectedURL]
 	preset := m.config.Presets[m.selectedPreset]
@@ -255,7 +250,6 @@ func (m model) startStreaming() (tea.Model, tea.Cmd) {
 	args = append(args, presetArgs...)
 	args = append(args, "-f", "flv", url)
 
-	m.streaming = true
 	m.selectedURL = -1
 	m.selectedPreset = -1
 
@@ -268,15 +262,9 @@ func (m model) startStreaming() (tea.Model, tea.Cmd) {
 		Setsid: true,
 	}
 
-	// Start in background
-	if err := cmd.Start(); err != nil {
-		// handle error
-		return m, nil
-	}
+	_ = cmd.Start()
 
-	m.streamCmd = cmd
-
-	return m, nil
+	return m, tea.Quit
 }
 
 func (m model) View() string {
@@ -332,13 +320,20 @@ func (m model) View() string {
 	}
 	presetBox := presetBoxStyle.Render(presetView.String())
 
-	helpText := helpStyle.Render("w/s: url • ↑/↓: preset • enter: start • a/p: add • shift+a/p: delete • q: quit")
+	helpText := helpStyle.Render("w/s: url • ↑/↓: preset • enter: start • k: kill • a/p: add • shift+a/p: delete • q: quit")
+	_, err := exec.Command("pgrep", "ffmpeg").Output()
+	streamingText := ""
+	if err == nil {
+		streamingText = streamingStyle.Render("Streaming")
+	}
+
 	return fmt.Sprintf(
-		"%s\n%s\n%s\n%s",
+		"%s\n%s\n%s\n%s\n%s",
 		titleStyle.Render("Quick Stream"),
 		urlBox,
 		presetBox,
 		helpText,
+		streamingText,
 	)
 }
 
